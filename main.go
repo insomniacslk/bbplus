@@ -260,7 +260,6 @@ func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool)
 	}
 	switch mediaType {
 	case Video:
-		time.Sleep(time.Second)
 		err = DownloadVideo(ctx, outDir, filePrefix, justPrintURLs)
 	case PDF:
 		err = DownloadPDF(ctx, outDir, filePrefix, justPrintURLs)
