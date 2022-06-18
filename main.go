@@ -17,6 +17,8 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
 	"github.com/kirsle/configdir"
@@ -258,6 +260,7 @@ func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool)
 	}
 	switch mediaType {
 	case Video:
+		time.Sleep(time.Second)
 		err = DownloadVideo(ctx, outDir, filePrefix, justPrintURLs)
 	case PDF:
 		err = DownloadPDF(ctx, outDir, filePrefix, justPrintURLs)
@@ -267,11 +270,39 @@ func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool)
 	return err
 }
 
-func fetch(fileURL, filename string) error {
-	resp, err := http.Get(fileURL)
+func fetch(fileURL, filename string, cookies []*network.Cookie, referrer string) error {
+	req, err := http.NewRequest("GET", fileURL, nil)
 	if err != nil {
-		return fmt.Errorf("http GET failed: %w", err)
+		return fmt.Errorf("http.NewRequest failed: %w", err)
 	}
+	for _, c := range cookies {
+		var samesite http.SameSite
+		switch c.SameSite {
+		case network.CookieSameSiteStrict:
+			samesite = http.SameSiteStrictMode
+		case network.CookieSameSiteLax:
+			samesite = http.SameSiteLaxMode
+		case network.CookieSameSiteNone:
+			samesite = http.SameSiteNoneMode
+		default:
+			samesite = http.SameSiteDefaultMode
+		}
+		req.AddCookie(&http.Cookie{
+			Name:     c.Name,
+			Value:    c.Value,
+			Path:     c.Path,
+			Domain:   c.Domain,
+			Expires:  time.Unix(int64(c.Expires), 0),
+			Secure:   c.Secure,
+			HttpOnly: c.HTTPOnly,
+			SameSite: samesite,
+		})
+	}
+	if referrer != "" {
+		req.Header.Set("Referer", referrer)
+	}
+	client := http.Client{}
+	resp, err := client.Do(req)
 	defer resp.Body.Close()
 	buf, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -303,9 +334,21 @@ func DownloadVideo(ctx context.Context, outDir, filePrefix string, justPrintURLs
 	}
 	log.Printf("Navigating to iframe URL '%s'", iframeURL)
 	playSelector := `//button[contains(@class, 'play')]`
-	var script string
+	var (
+		script  string
+		cookies []*network.Cookie
+		err     error
+	)
+	var currentURL string
 	tasks = chromedp.Tasks{
-		chromedp.Navigate(iframeURL),
+		chromedp.Location(&currentURL),
+		// set referrer on Vimeo private videos, or they won't load
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, _, _, err := page.Navigate(iframeURL).
+				WithReferrer(currentURL).
+				Do(ctx)
+			return err
+		}),
 		chromedp.WaitVisible(playSelector, chromedp.BySearch),
 		chromedp.Click(playSelector),
 		chromedp.Sleep(time.Second),
@@ -316,6 +359,13 @@ func DownloadVideo(ctx context.Context, outDir, filePrefix string, justPrintURLs
 			}
 			script, err = dom.GetOuterHTML().WithNodeID(htmlNode.NodeID).Do(ctx)
 			return err
+		}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			cookies, err = network.GetAllCookies().Do(ctx)
+			if err != nil {
+				return err
+			}
+			return nil
 		}),
 	}
 	if err := chromedp.Run(ctx, tasks); err != nil {
@@ -334,19 +384,30 @@ func DownloadVideo(ctx context.Context, outDir, filePrefix string, justPrintURLs
 	if justPrintURLs {
 		fmt.Println(mp4URL)
 		return nil
-	} else {
-		filename := filepath.Join(outDir, filePrefix+".mp4")
-		log.Printf("Starting download of '%s' into '%s'", mp4URL, filename)
-		return fetch(mp4URL, filename)
 	}
+
+	filename := filepath.Join(outDir, filePrefix+".mp4")
+	log.Printf("Starting download of '%s' into '%s'", mp4URL, filename)
+	return fetch(mp4URL, filename, cookies, currentURL)
 }
 
 // DownloadPDF downloads the PDF item.
 func DownloadPDF(ctx context.Context, outDir, filePrefix string, justPrintURLs bool) error {
 	log.Printf("Retrieving PDF URL")
-	var pdfNodes []*cdp.Node
+	var (
+		pdfNodes []*cdp.Node
+		cookies  []*network.Cookie
+		err      error
+	)
 	tasks := chromedp.Tasks{
 		chromedp.Nodes(`//a[contains(@target, '_blank')]`, &pdfNodes, chromedp.AtLeast(1), chromedp.BySearch),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			cookies, err = network.GetAllCookies().Do(ctx)
+			if err != nil {
+				return err
+			}
+			return nil
+		}),
 	}
 	if err := chromedp.Run(ctx, tasks); err != nil {
 		return fmt.Errorf("failed to get PDF node: %w", err)
@@ -355,11 +416,10 @@ func DownloadPDF(ctx context.Context, outDir, filePrefix string, justPrintURLs b
 	if justPrintURLs {
 		fmt.Println(pdfURL)
 		return nil
-	} else {
-		filename := filepath.Join(outDir, filePrefix+".pdf")
-		log.Printf("Downloading PDF '%s' to '%s'", pdfURL, filename)
-		return fetch(pdfURL, filename)
 	}
+	filename := filepath.Join(outDir, filePrefix+".pdf")
+	log.Printf("Downloading PDF '%s' to '%s'", pdfURL, filename)
+	return fetch(pdfURL, filename, cookies, "")
 }
 
 // WithCancel returns a chromedp context with a cancellation function.
