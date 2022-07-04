@@ -39,7 +39,7 @@ var (
 	flagChromePath          = pflag.StringP("chrome-path", "c", "", "Custom path for chrome browser")
 	flagExpectCookiesPrompt = pflag.BoolP("expect-cookies-prompt", "C", true, "If true, will wait for the cookies notice and decline it")
 	flagProxy               = pflag.StringP("proxy", "P", "", "HTTP proxy")
-	flagTimeout             = pflag.UintP("timeout", "t", 120, "Timeout in seconds")
+	flagTimeout             = pflag.DurationP("timeout", "t", 2*time.Hour, "Global timeout as a parsable string (e.g. 1h12m)")
 	flagOutdir              = pflag.StringP("outdir", "O", "", "Output directory")
 	flagJustPrintURLs       = pflag.BoolP("just-print-urls", "J", false, "Just print URLs without downloading")
 )
@@ -108,9 +108,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
-	timeout := time.Duration(*flagTimeout) * time.Second
-
-	log.Printf("Timeout                 : %s", timeout)
+	log.Printf("Timeout                 : %s", *flagTimeout)
 	log.Printf("Proxy                   : %s", config.Proxy)
 	log.Printf("Show browser            : %v", *flagShowBrowser)
 	log.Printf("Debug                   : %v", *flagDebug)
@@ -120,7 +118,7 @@ func main() {
 	log.Printf("Output directory        : %s", config.Outdir)
 	log.Printf("Just print URLs         : %v", *flagJustPrintURLs)
 
-	ctx, cancelFuncs := WithCancel(context.Background(), timeout, *flagShowBrowser, *flagDebug, *flagChromePath, config.Proxy)
+	ctx, cancelFuncs := WithCancel(context.Background(), *flagTimeout, *flagShowBrowser, *flagDebug, *flagChromePath, config.Proxy)
 	for _, cancel := range cancelFuncs {
 		defer cancel()
 	}
