@@ -316,18 +316,30 @@ func DownloadVideo(ctx context.Context, outDir, filePrefix string, justPrintURLs
 	log.Printf("Downloading video: %s.mp4", filePrefix)
 	iframeSelector := `//iframe[contains(@class, 'elementor-video-iframe')]`
 	var (
-		iframeURL string
-		found     bool
+		iframeURL, iframeMainURL, iframeAlternateURL string
+		found                                        bool
 	)
 	tasks := chromedp.Tasks{
 		chromedp.WaitVisible(iframeSelector, chromedp.BySearch),
-		chromedp.AttributeValue(iframeSelector, "src", &iframeURL, &found),
+		chromedp.AttributeValue(iframeSelector, "src", &iframeMainURL, &found),
+		chromedp.AttributeValue(iframeSelector, "suppressedsrc", &iframeAlternateURL, &found),
 	}
 	if err := chromedp.Run(ctx, tasks); err != nil {
 		return fmt.Errorf("failed to get iframe: %w", err)
 	}
 	if !found {
 		return fmt.Errorf("iframe not found")
+	}
+	if !strings.HasPrefix(iframeMainURL, "https://") {
+		// try the suppressedsrc field instead. In some cases it's the one that
+		// contains the valid Vimeo URL
+		if !strings.HasPrefix(iframeAlternateURL, "https://") {
+			// the alternate URL is also broken?
+			return fmt.Errorf("invalid video URLs: main: '%s', alternate: '%s'", iframeMainURL, iframeAlternateURL)
+		}
+		iframeURL = iframeAlternateURL
+	} else {
+		iframeURL = iframeMainURL
 	}
 	log.Printf("Navigating to iframe URL '%s'", iframeURL)
 	playSelector := `//button[contains(@class, 'play')]`
