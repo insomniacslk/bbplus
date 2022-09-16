@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -172,7 +172,7 @@ func DownloadAll(ctx context.Context, outDir string, justPrintURLs bool) error {
 	if err := chromedp.Run(ctx, tasks); err != nil {
 		return fmt.Errorf("failed to get item URLs: %w", err)
 	}
-	if err := ioutil.WriteFile("index.png", data, 0644); err != nil {
+	if err := os.WriteFile("index.png", data, 0644); err != nil {
 		return fmt.Errorf("failed to screenshot index: %w", err)
 	}
 	log.Printf("Screenshot saved to index.png")
@@ -227,7 +227,7 @@ func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool)
 	if err := chromedp.Run(ctx, tasks); err != nil {
 		return fmt.Errorf("screenshot failed: %w", err)
 	}
-	if err := ioutil.WriteFile(screenshotFileName, data, 0644); err != nil {
+	if err := os.WriteFile(screenshotFileName, data, 0644); err != nil {
 		return fmt.Errorf("failed to write file '%s': %w", screenshotFileName, err)
 	}
 	log.Printf("Screenshot saved at '%s'", screenshotFileName)
@@ -300,12 +300,15 @@ func fetch(fileURL, filename string, cookies []*network.Cookie, referrer string)
 	}
 	client := http.Client{}
 	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("client.Do failed: %w", err)
+	}
 	defer resp.Body.Close()
-	buf, err := ioutil.ReadAll(resp.Body)
+	buf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("ReadAll failed: %w", err)
 	}
-	if err := ioutil.WriteFile(filename, buf, 0644); err != nil {
+	if err := os.WriteFile(filename, buf, 0644); err != nil {
 		return fmt.Errorf("failed to save file '%s': %w", filename, err)
 	}
 	return nil
