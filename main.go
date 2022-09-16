@@ -112,7 +112,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
-	maskedPassword = "***"
+	maskedPassword := "***"
 	if config.Password == "" {
 		maskedPassword = "<not set>"
 	}
