@@ -26,18 +26,20 @@ import (
 	"mvdan.cc/xurls/v2"
 )
 
-const progname = "bbplus"
-
 const (
+	progname = "bbplus"
 	loginURL = "https://www.brunobarbieri.blog/login/"
 	itemsURL = "https://www.brunobarbieri.blog/barbieriplus-membri/"
 )
 
+var defaultConfigFile = path.Join(configdir.LocalConfig(progname), "config.json")
+
 var (
 	flagDebug               = pflag.BoolP("debug", "d", false, "Enable debug log")
+	flagConfigFile          = pflag.StringP("config", "c", defaultConfigFile, "Configuration file")
 	flagShowBrowser         = pflag.BoolP("show-browser", "b", false, "show browser, useful for debugging")
-	flagChromePath          = pflag.StringP("chrome-path", "c", "", "Custom path for chrome browser")
-	flagExpectCookiesPrompt = pflag.BoolP("expect-cookies-prompt", "C", true, "If true, will wait for the cookies notice and decline it")
+	flagChromePath          = pflag.StringP("chrome-path", "C", "", "Custom path for chrome browser")
+	flagExpectCookiesPrompt = pflag.BoolP("expect-cookies-prompt", "e", true, "If true, will wait for the cookies notice and decline it")
 	flagProxy               = pflag.StringP("proxy", "P", "", "HTTP proxy")
 	flagTimeout             = pflag.DurationP("timeout", "t", 2*time.Hour, "Global timeout as a parsable string (e.g. 1h12m)")
 	flagOutdir              = pflag.StringP("outdir", "O", "", "Output directory")
@@ -53,7 +55,7 @@ type Config struct {
 	Outdir              string `json:"outdir"`
 }
 
-func loadConfig() (*Config, error) {
+func loadConfig(configFile string) (*Config, error) {
 	// default config. If the config file exists, it might override some fields.
 	cfg := Config{}
 
@@ -71,8 +73,10 @@ func loadConfig() (*Config, error) {
 		log.Printf("Config loaded")
 	}()
 
-	configPath := configdir.LocalConfig(progname)
-	configFile := path.Join(configPath, "config.json")
+	configPath := filepath.Dir(configFile)
+	if configPath == "" {
+		return nil, fmt.Errorf("configuration directory cannot be empty")
+	}
 	log.Printf("Trying to load config file %s", configFile)
 	err := configdir.MakePath(configPath)
 	if err != nil {
@@ -104,9 +108,13 @@ func main() {
 	}
 	pflag.Usage = usage
 	pflag.Parse()
-	config, err := loadConfig()
+	config, err := loadConfig(*flagConfigFile)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+	maskedPassword = "***"
+	if config.Password == "" {
+		maskedPassword = "<not set>"
 	}
 	log.Printf("Timeout                 : %s", *flagTimeout)
 	log.Printf("Proxy                   : %s", config.Proxy)
@@ -114,6 +122,7 @@ func main() {
 	log.Printf("Debug                   : %v", *flagDebug)
 	log.Printf("Custom Chrome path      : %s", *flagChromePath)
 	log.Printf("Username                : %s", config.Username)
+	log.Printf("Password                : %s", maskedPassword)
 	log.Printf("Expect cookies prompt   : %v", config.ExpectCookiesPrompt)
 	log.Printf("Output directory        : %s", config.Outdir)
 	log.Printf("Just print URLs         : %v", *flagJustPrintURLs)
@@ -132,6 +141,12 @@ func main() {
 
 // Login logs into BB+.
 func Login(ctx context.Context, username, password string, expectCookiesNotice bool) error {
+	if username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
 	tasks := chromedp.Tasks{
 		chromedp.Navigate(loginURL),
 	}
