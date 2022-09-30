@@ -26,6 +26,8 @@ import (
 	"mvdan.cc/xurls/v2"
 )
 
+// TODO add screenshotAsPDF to config file
+
 const (
 	progname = "bbplus"
 	loginURL = "https://www.brunobarbieri.blog/login/"
@@ -44,6 +46,8 @@ var (
 	flagTimeout             = pflag.DurationP("timeout", "t", 2*time.Hour, "Global timeout as a parsable string (e.g. 1h12m)")
 	flagOutdir              = pflag.StringP("outdir", "O", "", "Output directory")
 	flagJustPrintURLs       = pflag.BoolP("just-print-urls", "J", false, "Just print URLs without downloading")
+	flagScreenshotAsPDF     = pflag.BoolP("as-pdf", "p", false, "Save screenshot as PDF instead of PNG")
+	flagDisableGPU          = pflag.BoolP("disable-gpu", "g", false, "Pass --disable-gpu to chrome")
 )
 
 // Config contains this program's configuration.
@@ -81,6 +85,7 @@ func loadConfig(configFile string) (*Config, error) {
 	err := configdir.MakePath(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			log.Printf("Configuration file does not exist, using defaults")
 			return &cfg, nil
 		}
 		return nil, fmt.Errorf("failed to create config path '%s': %w", configPath, err)
@@ -126,15 +131,21 @@ func main() {
 	log.Printf("Expect cookies prompt   : %v", config.ExpectCookiesPrompt)
 	log.Printf("Output directory        : %s", config.Outdir)
 	log.Printf("Just print URLs         : %v", *flagJustPrintURLs)
+	log.Printf("Disable GPU             : %v", *flagDisableGPU)
+	ssformat := "PNG"
+	if *flagScreenshotAsPDF {
+		ssformat = "PDF"
+	}
+	log.Printf("Screenshot file format  : %s", ssformat)
 
-	ctx, cancelFuncs := WithCancel(context.Background(), *flagTimeout, *flagShowBrowser, *flagDebug, *flagChromePath, config.Proxy)
+	ctx, cancelFuncs := WithCancel(context.Background(), *flagTimeout, *flagShowBrowser, *flagDebug, *flagChromePath, config.Proxy, *flagDisableGPU)
 	for _, cancel := range cancelFuncs {
 		defer cancel()
 	}
 	if err := Login(ctx, config.Username, config.Password, config.ExpectCookiesPrompt); err != nil {
 		log.Fatalf("Login failed: %v", err)
 	}
-	if err := DownloadAll(ctx, config.Outdir, *flagJustPrintURLs); err != nil {
+	if err := DownloadAll(ctx, config.Outdir, *flagJustPrintURLs, *flagScreenshotAsPDF); err != nil {
 		log.Fatalf("DownloadAll failed: %v", err)
 	}
 }
@@ -170,7 +181,7 @@ func Login(ctx context.Context, username, password string, expectCookiesNotice b
 }
 
 // DownloadAll downloads all the user content of BB+.
-func DownloadAll(ctx context.Context, outDir string, justPrintURLs bool) error {
+func DownloadAll(ctx context.Context, outDir string, justPrintURLs bool, screenshotAsPDF bool) error {
 	tasks := chromedp.Tasks{
 		chromedp.Navigate(itemsURL),
 	}
@@ -182,12 +193,32 @@ func DownloadAll(ctx context.Context, outDir string, justPrintURLs bool) error {
 	tasks = append(tasks,
 		chromedp.WaitVisible(linkFields, chromedp.BySearch),
 		chromedp.Nodes(linkFields, &linkNodes, chromedp.AtLeast(0), chromedp.BySearch),
-		chromedp.FullScreenshot(&data, 90 /* PNG quality */),
 	)
+	if screenshotAsPDF {
+		tasks = append(tasks,
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				buf, _, err := page.PrintToPDF().WithPrintBackground(false).Do(ctx)
+				if err != nil {
+					return err
+				}
+				data = buf
+				return nil
+			}),
+		)
+	} else {
+		tasks = append(tasks, chromedp.FullScreenshot(&data, 90 /* PNG quality */))
+	}
+
 	if err := chromedp.Run(ctx, tasks); err != nil {
 		return fmt.Errorf("failed to get item URLs: %w", err)
 	}
-	if err := os.WriteFile("index.png", data, 0644); err != nil {
+	screenshotFileName := filepath.Join(outDir, "index")
+	if screenshotAsPDF {
+		screenshotFileName += ".pdf"
+	} else {
+		screenshotFileName += ".png"
+	}
+	if err := os.WriteFile(screenshotFileName, data, 0644); err != nil {
 		return fmt.Errorf("failed to screenshot index: %w", err)
 	}
 	log.Printf("Screenshot saved to index.png")
@@ -198,7 +229,7 @@ func DownloadAll(ctx context.Context, outDir string, justPrintURLs bool) error {
 	for _, n := range linkNodes {
 		u, exists := n.Attribute("href")
 		if exists {
-			if err := Download(ctx, u, outDir, justPrintURLs); err != nil {
+			if err := Download(ctx, u, outDir, justPrintURLs, *flagScreenshotAsPDF); err != nil {
 				return fmt.Errorf("failed to download '%s': %w", u, err)
 			}
 		}
@@ -217,7 +248,7 @@ const (
 )
 
 // Download downloads an individual item.
-func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool) error {
+func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool, screenshotAsPDF bool) error {
 	u, err := url.Parse(urlString)
 	if err != nil {
 		return fmt.Errorf("invalid URL '%s': %w", urlString, err)
@@ -231,14 +262,33 @@ func Download(ctx context.Context, urlString, outDir string, justPrintURLs bool)
 		return fmt.Errorf("empty file prefix")
 	}
 	// save a full-page screenshot
-	screenshotFileName := filepath.Join(outDir, filePrefix+".png")
+	screenshotFileName := filepath.Join(outDir, filePrefix)
+	if screenshotAsPDF {
+		screenshotFileName += ".pdf"
+	} else {
+		screenshotFileName += ".png"
+	}
 	log.Printf("Retrieving  %s", filePrefix)
 	var data []byte
 	tasks := chromedp.Tasks{
 		chromedp.Navigate(urlString),
 		chromedp.WaitVisible(`//*[contains(@class, 'elementor-heading-title')]`, chromedp.BySearch),
-		chromedp.FullScreenshot(&data, 90 /* PNG quality */),
 	}
+	if screenshotAsPDF {
+		tasks = append(tasks,
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				buf, _, err := page.PrintToPDF().WithPrintBackground(false).Do(ctx)
+				if err != nil {
+					return err
+				}
+				data = buf
+				return nil
+			}),
+		)
+	} else {
+		tasks = append(tasks, chromedp.FullScreenshot(&data, 90 /* PNG quality */))
+	}
+
 	if err := chromedp.Run(ctx, tasks); err != nil {
 		return fmt.Errorf("screenshot failed: %w", err)
 	}
@@ -450,7 +500,7 @@ func DownloadPDF(ctx context.Context, outDir, filePrefix string, justPrintURLs b
 }
 
 // WithCancel returns a chromedp context with a cancellation function.
-func WithCancel(ctx context.Context, timeout time.Duration, showBrowser, doDebug bool, chromePath, proxyURL string) (context.Context, []func()) {
+func WithCancel(ctx context.Context, timeout time.Duration, showBrowser, doDebug bool, chromePath, proxyURL string, disableGPU bool) (context.Context, []func()) {
 	var cancelFuncs []func()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	cancelFuncs = append(cancelFuncs, cancel)
@@ -467,6 +517,9 @@ func WithCancel(ctx context.Context, timeout time.Duration, showBrowser, doDebug
 	}
 	if proxyURL != "" {
 		allocatorOpts = append(allocatorOpts, chromedp.ProxyServer(proxyURL))
+	}
+	if disableGPU {
+		allocatorOpts = append(allocatorOpts, chromedp.Flag("disable-gpu", disableGPU))
 	}
 	ctx, cancel = chromedp.NewExecAllocator(ctx, allocatorOpts...)
 	cancelFuncs = append(cancelFuncs, cancel)
