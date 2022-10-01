@@ -143,10 +143,12 @@ func main() {
 		defer cancel()
 	}
 	if err := Login(ctx, config.Username, config.Password, config.ExpectCookiesPrompt); err != nil {
-		log.Fatalf("Login failed: %v", err)
+		log.Printf("Login failed: %v", err)
+		return
 	}
 	if err := DownloadAll(ctx, config.Outdir, *flagJustPrintURLs, *flagScreenshotAsPDF); err != nil {
-		log.Fatalf("DownloadAll failed: %v", err)
+		log.Printf("DownloadAll failed: %v", err)
+		return
 	}
 }
 
