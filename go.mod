@@ -3,6 +3,7 @@ module github.com/insomniacslk/bbplus
 go 1.18
 
 require (
+	github.com/akiomik/vimeo-dl v0.0.3
 	github.com/chromedp/cdproto v0.0.0-20220924210414-0e3390be1777
 	github.com/chromedp/chromedp v0.8.5
 	github.com/kirsle/configdir v0.0.0-20170128060238-e45d2f54772f

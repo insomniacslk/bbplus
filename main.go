@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/akiomik/vimeo-dl/vimeo"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/network"
@@ -212,7 +215,7 @@ func DownloadAll(ctx context.Context, outDir string, justPrintURLs bool, screens
 	}
 
 	if err := chromedp.Run(ctx, tasks); err != nil {
-		return fmt.Errorf("failed to get item URLs: %w", err)
+		return fmt.Errorf("failed to get item URLs or screenshots: %w", err)
 	}
 	screenshotFileName := filepath.Join(outDir, "index")
 	if screenshotAsPDF {
@@ -381,6 +384,55 @@ func fetch(fileURL, filename string, cookies []*network.Cookie, referrer string)
 	return nil
 }
 
+func fetchFromMasterJSON(masterJSONURL, filename string) error {
+	mju, err := url.Parse(masterJSONURL)
+	if err != nil {
+		return fmt.Errorf("invalid master JSON URL: %w", err)
+	}
+	client := vimeo.NewClient()
+	mj, err := client.GetMasterJson(mju)
+	if err != nil {
+		return fmt.Errorf("cannot get master JSON: %w", err)
+	}
+	// get video stream into a temp file
+	videoFile, err := ioutil.TempFile("", progname)
+	if err != nil {
+		return fmt.Errorf("failed to create temp video file: %w", err)
+	}
+	defer func() {
+		if err := videoFile.Close(); err != nil {
+			log.Printf("Failed to close video file: %v", err)
+		}
+	}()
+	log.Printf("Downloading %s video stream to %s", filename, videoFile.Name())
+	if err := mj.CreateVideoFile(videoFile, mju, mj.FindMaximumBitrateVideo().Id, client); err != nil {
+		return fmt.Errorf("failed to create video file for %s: %w", filename, err)
+	}
+	log.Printf("Downloaded %s video stream to %s", filename, videoFile.Name())
+	// get audio stream into a temp file
+	audioFile, err := ioutil.TempFile("", progname)
+	if err != nil {
+		return fmt.Errorf("failed to create temp audio file: %w", err)
+	}
+	defer func() {
+		if err := audioFile.Close(); err != nil {
+			log.Printf("Failed to close audio file: %v", err)
+		}
+	}()
+	log.Printf("Downloading %s audio stream to %s", filename, audioFile.Name())
+	if err := mj.CreateAudioFile(audioFile, mju, mj.FindMaximumBitrateAudio().Id, client); err != nil {
+		return fmt.Errorf("failed to create audio file for %s: %w", filename, err)
+	}
+	log.Printf("Downloaded %s audio stream to %s", filename, videoFile.Name())
+	// combine audio and video streams into one. Requires ffmpeg
+	cmd := exec.Command("ffmpeg", "-y", "-i", videoFile.Name(), "-i", audioFile.Name(), "-c", "copy", filename)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to combine video and audio streams into %s: %w", filename, err)
+	}
+	return nil
+}
+
 // DownloadVideo downloads the video item.
 func DownloadVideo(ctx context.Context, outDir, filePrefix string, justPrintURLs bool) error {
 	log.Printf("Downloading video: %s.mp4", filePrefix)
@@ -454,20 +506,31 @@ func DownloadVideo(ctx context.Context, outDir, filePrefix string, justPrintURLs
 	rx := xurls.Strict()
 	urls := rx.FindAllString(script, -1)
 	// get the last URL ending with .mp4
-	var mp4URL string
+	var mp4URL, masterJSONURL string
 	for _, u := range urls {
 		if strings.HasSuffix(u, ".mp4") {
 			mp4URL = u
+			break
+		} else if strings.Contains(u, "/master.json?") {
+			masterJSONURL = u
+			break
 		}
 	}
+	if mp4URL == "" && masterJSONURL == "" {
+		return fmt.Errorf("empty video URL")
+	}
+	log.Printf("MP4 URL: %s\nMaster JSON URL: %s\n", mp4URL, masterJSONURL)
 	if justPrintURLs {
-		fmt.Println(mp4URL)
 		return nil
 	}
+	log.Printf("File prefix: %s", filePrefix)
 
 	filename := filepath.Join(outDir, filePrefix+".mp4")
-	log.Printf("Starting download of '%s' into '%s'", mp4URL, filename)
-	return fetch(mp4URL, filename, cookies, currentURL)
+	log.Printf("Downloading video to '%s'", filename)
+	if mp4URL != "" {
+		return fetch(mp4URL, filename, cookies, currentURL)
+	}
+	return fetchFromMasterJSON(masterJSONURL, filename)
 }
 
 // DownloadPDF downloads the PDF item.
